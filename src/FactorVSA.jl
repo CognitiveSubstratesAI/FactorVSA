@@ -47,8 +47,10 @@ _todo(what) = error("FactorVSA: NOT IMPLEMENTED — $what. See SPEC.md.")
 # Backends (paper §2). Identity-parameterized: the algebra is generic over the
 # binding model; BipolarMAP is implemented. PhasorHRR is left as stubs.
 # ─────────────────────────────────────────────────────────────────────────────
+"Binding model for the VSA algebra. The algebra is generic over the backend; [`BipolarMAP`](@ref) is the implemented one."
 abstract type Backend end
-struct BipolarMAP <: Backend end   # {-1,+1}^D, ⊗ = elementwise *, self-inverse
+"`{-1,+1}^D` MAP backend: `⊗` is elementwise product (self-inverse), bundling is sign-of-sum."
+struct BipolarMAP <: Backend end
 struct PhasorHRR <: Backend end    # complex unit phasors (not implemented)
 
 """A fixed-width hypervector tagged by its `Backend`. The dense buffer is stored in
@@ -58,7 +60,9 @@ struct HV{B <: Backend}
     data::Vector{Float64}   # bipolar: ±1.0 for atoms, real for un-projected sums/unbinds
 end
 
+"Dimension `D` of a hypervector."
 dim(h::HV) = length(h.data)
+"The `Backend` type a hypervector is tagged with."
 backend(::HV{B}) where {B} = B
 Base.:(==)(a::HV{B}, b::HV{B}) where {B} = a.data == b.data
 
@@ -74,8 +78,10 @@ codebook_matrix(c::Codebook) = c.atoms
 Base.length(c::Codebook) = size(c.atoms, 2)
 
 # Random generators (BipolarMAP). Atoms are i.i.d. uniform ±1 (Assumption 1).
+"Draw a random `D`-dimensional `BipolarMAP` hypervector (i.i.d. uniform ±1, Assumption 1)."
 random_hv(::Type{BipolarMAP}, D::Int, rng::AbstractRNG=Random.default_rng()) =
     HV{BipolarMAP}(rand(rng, (-1.0, 1.0), D))
+"Draw a `D×M` codebook of `M` random `BipolarMAP` atoms, named `prefix1…prefixM`."
 function random_codebook(::Type{BipolarMAP}, D::Int, M::Int;
     rng::AbstractRNG=Random.default_rng(), prefix::Symbol=:c)
     HV  # touch to keep type inferred; no-op

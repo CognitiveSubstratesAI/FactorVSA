@@ -14,7 +14,11 @@ makedocs(;
         edit_link="main",
         assets=String[]
     ),
-    pages=["Home" => "index.md"],
+    pages=[
+        "Home" => "index.md",
+        "Guide" => "guide.md",
+        "API" => "api.md"
+    ],
     # index.md links to SPEC.md / GATE_RESULT.md outside docs/src; tolerate warnings.
     warnonly=true
 )
