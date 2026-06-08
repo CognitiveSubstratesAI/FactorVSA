@@ -417,11 +417,8 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 include("MeTTaShim.jl")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 5 — R-HMH episodic memory (§8); 5a encode + 5b recall + 5c consolidate + gate
-# + ColBaC-HDC representation layer (§9). Two schemas over one machinery (Eq 84 ≡ Eq 11).
-# ─────────────────────────────────────────────────────────────────────────────
-include("RHMH.jl")
-include("ColBaCHDC.jl")
+# NOTE: the Step-5 application layers (R-HMH episodic memory §8, ColBaC-HDC representation
+# §9) were EXTRACTED to the sibling package HMH.jl after the Step-5 gate passed — keeping
+# FactorVSA a pure resonator-VSA substrate. See github.com/CognitiveSubstratesAI/HMH.
 
 end # module FactorVSA

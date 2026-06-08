@@ -211,11 +211,14 @@ unlocked. If it **fails** (margins don't hold at feasible `D`), STOP and report 
 honest outcome is "this factorization/substrate is not HDC-admissible" (§6.4), not a
 patch. Either way, the gate result is the deliverable that matters.
 
-### STEP 5 — APPLICATIONS (paper §8 R-HMH, §9 ColBaC) — **FENCED: DO NOT BUILD until Step 4 passes**
-R-HMH typed episode codes (Eq 69), resonant partial recall/slot completion (§8.3),
-the dual-channel densifier `𝒟_hmh` (Eq 67/74), ColBaC column/certificate codes
-(Eq 84–88). These are large towers that are only meaningful once the margin gate
-confirms the cleanup/resonator layer is reliable. Left unspecified here on purpose.
+### STEP 5 — APPLICATIONS (paper §8 R-HMH, §9 ColBaC) — BUILT + EXTRACTED to HMH.jl
+The Step-4 gate passed, Step 5 was built (R-HMH episode codes Eq 69, resonant recall/slot
+completion §8.3, consolidation Eq 77; ColBaC-HDC column/support/certificate codes Eq 84–88
++ audit quantities), its episodic admissibility gate PASSED, and the whole application layer
+was **extracted to the sibling package `HMH.jl`** (github.com/CognitiveSubstratesAI/HMH) to
+keep FactorVSA a pure substrate. STILL FENCED there: §8.4 neural judgment (densifier `𝒟_hmh`
++ neural model) and the ColBaC *learner* (the NGC/FabricPC line). FactorVSA itself stops at
+Step 4 + the phase-2/2b MeTTa shim.
 
 ---
 
