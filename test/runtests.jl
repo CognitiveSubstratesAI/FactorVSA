@@ -1,6 +1,7 @@
 using Test
 using Random
 using LinearAlgebra
+using Base.Threads               # concurrency testset (DualIndex thread safety)
 using FactorVSA
 using MORK: GROUNDED_REGISTRY   # phase-2 shim test inspects the grounded registry
 
@@ -189,5 +190,78 @@ rng() = MersenneTwister(0xF00D)
 
         unregister_factorvsa!()
         @test !haskey(reg, "fvsa-resonate")
+    end
+
+    @testset "Concurrency — DualIndex thread safety" begin
+        # The arena is lock-guarded; an UNGUARDED version throws BoundsError under a
+        # 2-thread insert stress (proven before the fix). This testset is only
+        # meaningful with ≥2 threads — CI sets JULIA_NUM_THREADS. Skip-with-log
+        # otherwise (never a silent pass).
+        nt = nthreads()
+        if nt < 2
+            @info "Concurrency testset SKIPPED — single-threaded. Re-run with `julia -t auto` (CI sets JULIA_NUM_THREADS)."
+            @test_skip nt >= 2
+        else
+            D = 64
+            # Scenario 1 — concurrent insert of distinct ids: invariants on count, handle
+            # integrity, and id-map size must hold after the barrier.
+            insert_errs() = begin
+                idx = DualIndex{Int, HV{BipolarMAP}}()
+                per = 4000
+                recs = Vector{Vector{Tuple{HandleRef, HV{BipolarMAP}}}}(undef, nt)
+                @threads for t in 1:nt
+                    mine = Tuple{HandleRef, HV{BipolarMAP}}[]
+                    for k in 1:per
+                        v = random_hv(BipolarMAP, D)
+                        push!(mine, (insert_vector!(idx, (t - 1) * per + k, v), v))
+                    end
+                    recs[t] = mine
+                end
+                total = nt * per
+                e = String[]
+                length(idx.arena) == total ||
+                    push!(e, "arena length $(length(idx.arena)) != $total")
+                bad = count(((ref, v),) -> deref(idx, ref) != v, Iterators.flatten(recs))
+                bad == 0 || push!(e, "$bad/$total handles deref wrong")
+                length(idx.id_to_handle) == total ||
+                    push!(e, "id_to_handle $(length(idx.id_to_handle)) != $total")
+                e
+            end
+            # Scenario 2 — concurrent insert/free/deref churn: a stale ref must never
+            # deref after its slot is freed (ABA guard), and the run must not throw.
+            aba_violations() = begin
+                idx = DualIndex{Int, HV{BipolarMAP}}()
+                per = 4000
+                v = Atomic{Int}(0)
+                @threads for t in 1:nt
+                    for k in 1:per
+                        ref = insert_vector!(idx, (t - 1) * per + k, random_hv(BipolarMAP, D))
+                        if iseven(k)
+                            free_vector!(idx, ref.handle)
+                            deref(idx, ref) === nothing || atomic_add!(v, 1)
+                        else
+                            deref(idx, ref)
+                        end
+                    end
+                end
+                v[]
+            end
+
+            for _ in 1:2                       # repeat: races are probabilistic
+                @test isempty(insert_errs())
+                @test aba_violations() == 0
+            end
+            # Atomic id-counter: concurrent _fvsa_store! on the global arena must mint a
+            # UNIQUE id per store (a non-atomic `+= 1` loses updates → fewer new entries).
+            # Counts only the delta, so prior testset pollution is irrelevant.
+            before = length(FVSA_ARENA.id_to_handle)
+            nstores = nt * 1000
+            @threads for _ in 1:nt
+                for _ in 1:1000
+                    FactorVSA._fvsa_store!(random_hv(BipolarMAP, D))
+                end
+            end
+            @test length(FVSA_ARENA.id_to_handle) - before == nstores
+        end
     end
 end

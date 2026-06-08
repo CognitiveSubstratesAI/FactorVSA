@@ -16,6 +16,10 @@ jobs:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    # Run threaded so the DualIndex concurrency testset is exercised (it skips-with-log
+    # under a single thread). GitHub runners have ≥2 cores → `auto` gives ≥2 threads.
+    env:
+      JULIA_NUM_THREADS: 'auto'
     strategy:
       fail-fast: false
       matrix:

@@ -130,6 +130,7 @@ mutable struct DualIndex{Id, V, B <: ReverseBackend}
     handle_to_id::Dict{VectorHandle, Id}
     codebook_version::UInt32                  # invalidates derived/encoded vectors on bump
     backend::B
+    lock::ReentrantLock                       # guards ALL structural access (see below)
 end
 # codebook_version — DELIBERATELY DORMANT (decided phase-2b, 2026-06-06).
 #   It exists to invalidate CACHED ENCODINGS when a codebook MUTATES in place. The
@@ -140,33 +141,48 @@ end
 #   mutable-codebook / encoding-cache feature; do NOT wire it for immutable codebooks.
 DualIndex{Id, V}(backend::B=ArenaScanBackend()) where {Id, V, B <: ReverseBackend} =
     DualIndex{Id, V, B}(V[], UInt32[], falses(0), VectorHandle[],
-        Dict{Id, VectorHandle}(), Dict{VectorHandle, Id}(), UInt32(0), backend)
+        Dict{Id, VectorHandle}(), Dict{VectorHandle, Id}(), UInt32(0), backend,
+        ReentrantLock())
+
+# THREAD SAFETY. The arena (`arena`/`gen`/`live`/`free`) and its id-maps are mutated by
+# `insert_vector!`/`free_vector!` (which `push!`/resize the backing Vectors) and read by
+# `deref`/`lookup_vector`/`reverse_lookup`. An UNGUARDED concurrent `push!` resize races
+# with a concurrent read → torn length / BoundsError / corruption (proven: a 2-thread
+# insert stress throws `BoundsError` on `gen`). Every structural op therefore takes `lock`
+# (a ReentrantLock — reentrant so guarded ops may nest). Reads are locked too: a reader
+# touching `arena[h]` while a writer reallocates the buffer is itself UB. The process-global
+# `FVSA_ARENA` (MeTTaShim) is shared by every dense-producing grounded op, so this is the
+# correctness boundary for concurrent MeTTa eval — not a hypothetical.
 
 """Insert `v` under identity `id`; allocate (or reuse a freed) slot; return a
 generation-stamped `HandleRef`. The handle is stable for the binding's lifetime
 regardless of later inserts/deletes. (Named `insert_vector!`, not `bind!`, to avoid
 colliding with the VSA `bind`.)"""
 function insert_vector!(idx::DualIndex{Id, V}, id::Id, v::V) where {Id, V}
-    if isempty(idx.free)
-        push!(idx.arena, v)
-        push!(idx.gen, UInt32(0))
-        push!(idx.live, true)
-        h = VectorHandle(length(idx.arena))
-    else
-        h = pop!(idx.free)
-        idx.arena[h] = v
-        idx.live[h] = true            # gen[h] was already bumped at free time
+    @lock idx.lock begin
+        if isempty(idx.free)
+            push!(idx.arena, v)
+            push!(idx.gen, UInt32(0))
+            push!(idx.live, true)
+            h = VectorHandle(length(idx.arena))
+        else
+            h = pop!(idx.free)
+            idx.arena[h] = v
+            idx.live[h] = true            # gen[h] was already bumped at free time
+        end
+        idx.id_to_handle[id] = h
+        idx.handle_to_id[h] = id
+        HandleRef(h, idx.gen[h])
     end
-    idx.id_to_handle[id] = h
-    idx.handle_to_id[h] = id
-    HandleRef(h, idx.gen[h])
 end
 
 "Forward: `id → handle → vector`, checking liveness. Returns `nothing` if absent/dead."
 function lookup_vector(idx::DualIndex{Id}, id::Id) where {Id}
-    h = get(idx.id_to_handle, id, nothing)
-    h === nothing && return nothing
-    idx.live[h] ? idx.arena[h] : nothing
+    @lock idx.lock begin
+        h = get(idx.id_to_handle, id, nothing)
+        h === nothing && return nothing
+        idx.live[h] ? idx.arena[h] : nothing
+    end
 end
 
 """Reverse lookup, dispatched on the backend. `ArenaScanBackend` = similarity scan
@@ -175,9 +191,11 @@ positional order."""
 function reverse_lookup(::ArenaScanBackend, idx::DualIndex{Id, HV{B}}, query::HV{B};
     topk::Int=5) where {Id, B}
     scored = Tuple{Float64, VectorHandle}[]
-    for h in 1:length(idx.arena)
-        idx.live[h] || continue
-        push!(scored, (dot(idx.arena[h].data, query.data), VectorHandle(h)))
+    @lock idx.lock begin
+        for h in 1:length(idx.arena)
+            idx.live[h] || continue
+            push!(scored, (dot(idx.arena[h].data, query.data), VectorHandle(h)))
+        end
     end
     sort!(scored; by=first, rev=true)
     [h for (_, h) in scored[1:min(topk, length(scored))]]
@@ -187,36 +205,42 @@ reverse_lookup(idx::DualIndex, query; kwargs...) =
 
 "Free a slot: clear `live`, bump `gen[handle]` (ABA), drop id-map entries, recycle."
 function free_vector!(idx::DualIndex, h::VectorHandle)
-    (h <= length(idx.live) && idx.live[h]) || return nothing
-    idx.live[h] = false
-    idx.gen[h] += UInt32(1)
-    id = get(idx.handle_to_id, h, nothing)
-    id !== nothing && delete!(idx.id_to_handle, id)
-    delete!(idx.handle_to_id, h)
-    push!(idx.free, h)
+    @lock idx.lock begin
+        (h <= length(idx.live) && idx.live[h]) || return nothing
+        idx.live[h] = false
+        idx.gen[h] += UInt32(1)
+        id = get(idx.handle_to_id, h, nothing)
+        id !== nothing && delete!(idx.id_to_handle, id)
+        delete!(idx.handle_to_id, h)
+        push!(idx.free, h)
+    end
     nothing
 end
 
 "Generation-checked deref: the vector iff `gen[handle]==ref.generation && live[handle]`, else `nothing`."
 function deref(idx::DualIndex, ref::HandleRef)
-    if (
-        ref.handle <= length(idx.arena) && idx.live[ref.handle] &&
-        idx.gen[ref.handle] == ref.generation
-    )
-        idx.arena[ref.handle]
-    else
-        nothing
+    @lock idx.lock begin
+        if (
+            ref.handle <= length(idx.arena) && idx.live[ref.handle] &&
+            idx.gen[ref.handle] == ref.generation
+        )
+            idx.arena[ref.handle]
+        else
+            nothing
+        end
     end
 end
 
 "Rebuild the `id ↔ handle` cache from authoritative `(id, handle)` pairs (cache is recoverable)."
 function rebuild_cache!(idx::DualIndex{Id}, pairs) where {Id}
-    empty!(idx.id_to_handle)
-    empty!(idx.handle_to_id)
-    for (id, h) in pairs
-        hh = VectorHandle(h)
-        idx.id_to_handle[id] = hh
-        idx.handle_to_id[hh] = id
+    @lock idx.lock begin
+        empty!(idx.id_to_handle)
+        empty!(idx.handle_to_id)
+        for (id, h) in pairs
+            hh = VectorHandle(h)
+            idx.id_to_handle[id] = hh
+            idx.handle_to_id[hh] = id
+        end
     end
     idx
 end

@@ -25,12 +25,17 @@ export FVSA_ARENA, FVSA_CODEBOOKS, register_factorvsa!, unregister_factorvsa!
 export vecref, parse_vecref, cbref, parse_cbref
 
 # Process-global arena (Step-0 DualIndex). Id == the VecRef integer.
+# Concurrency: FVSA_ARENA is internally lock-guarded (see DualIndex). The id counter is a
+# Threads.Atomic so concurrent grounded-op eval can't hand two stores the same id (a
+# non-atomic `+= 1` loses updates → aliased handles). MORK eval is single-threaded today,
+# so this is latent — but the arena is process-global, so the moment anything parallelizes
+# it must hold. atomic_add! returns the OLD value, hence `+ 1` for the fresh monotonic id.
 const FVSA_ARENA = DualIndex{Int, HV{BipolarMAP}}()
-const _FVSA_NEXT_ID = Ref(0)
+const _FVSA_NEXT_ID = Threads.Atomic{Int}(0)
 
 "Store `hv` in the arena, return its integer handle id."
 function _fvsa_store!(hv::HV{BipolarMAP})::Int
-    id = (_FVSA_NEXT_ID[] += 1)
+    id = Threads.atomic_add!(_FVSA_NEXT_ID, 1) + 1
     insert_vector!(FVSA_ARENA, id, hv)
     id
 end
@@ -64,11 +69,12 @@ end
 # (never reused → no ABA), fail-loud lookup. See the codebook_version note in
 # FactorVSA.jl for why this decouples from DualIndex.codebook_version.
 const FVSA_CODEBOOKS = Dict{Int, Codebook{BipolarMAP}}()
-const _FVSA_CB_NEXT_ID = Ref(0)
+const _FVSA_CB_NEXT_ID = Threads.Atomic{Int}(0)
+const _FVSA_CB_LOCK = ReentrantLock()   # guards the FVSA_CODEBOOKS dict (store/get/delete)
 
 function _fvsa_store_cb!(cb::Codebook{BipolarMAP})::Int
-    id = (_FVSA_CB_NEXT_ID[] += 1)
-    FVSA_CODEBOOKS[id] = cb
+    id = Threads.atomic_add!(_FVSA_CB_NEXT_ID, 1) + 1
+    @lock _FVSA_CB_LOCK (FVSA_CODEBOOKS[id] = cb)
     id
 end
 
@@ -85,7 +91,7 @@ function parse_cbref(s::AbstractString)
 end
 
 _fvsa_get_cb(s::AbstractString)::Codebook{BipolarMAP} = begin
-    cb = get(FVSA_CODEBOOKS, parse_cbref(s), nothing)
+    cb = @lock _FVSA_CB_LOCK get(FVSA_CODEBOOKS, parse_cbref(s), nothing)
     cb === nothing && error("FactorVSA: dangling codebook handle $(repr(s))")
     cb
 end
@@ -207,7 +213,7 @@ function register_factorvsa!()
         "fvsa-free-codebook",
         args -> begin
             length(args) == 1 || error("fvsa-free-codebook: needs (CodebookRef c)")
-            delete!(FVSA_CODEBOOKS, parse_cbref(args[1]))
+            @lock _FVSA_CB_LOCK delete!(FVSA_CODEBOOKS, parse_cbref(args[1]))
             "()"
         end
     )
