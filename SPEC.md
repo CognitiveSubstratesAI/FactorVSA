@@ -257,8 +257,14 @@ and `asource_new` auto-routes any registered name to it. So the shim is upstream
   `(VecRef h)`; `(fvsa-sim a b)` → scalar. Handlers parse handle-strings, op in the arena,
   store dense results, return a fresh handle. Both scalar and dense results go through the
   one string channel (dense via handle).
-- **Phase-2b (deferred):** codebook-dependent ops (`cleanup`/`resonate`/`factorize`) need a
-  `CodebookRef` registry — not yet built.
+- **Phase-2b (DONE):** the resonator is callable from MeTTa. Codebooks are **immutable
+  `(CodebookRef c)` handles** (a process-global registry; "change" = a new handle, never
+  in-place mutation) — which **decouples them from `DualIndex.codebook_version`** (no
+  mutation ⇒ nothing to invalidate; the field stays reserved for a future mutable/encoding-
+  cache feature). Ops: `(fvsa-codebook D M)`, `(fvsa-codebook-atom c i)`, `(fvsa-cleanup z c)`,
+  `(fvsa-resonate H c1 c2 …)` (→ recovered factor tuple, multi-start), `(fvsa-recompose-score
+  H f…)`, `(fvsa-free-codebook c)`. So the package's headline capability — resonator
+  factorization — is now MeTTa-callable, not just base VSA.
 
 ---
 

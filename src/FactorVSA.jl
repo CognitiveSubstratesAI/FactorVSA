@@ -125,9 +125,13 @@ mutable struct DualIndex{Id, V, B <: ReverseBackend}
     codebook_version::UInt32                  # invalidates derived/encoded vectors on bump
     backend::B
 end
-# SPEC?: codebook_version semantics (wire when codebooks become real / phase-2):
-#   DERIVED/encoded vectors are keyed by (id, codebook_version) — a bump must invalidate
-#   them. PRIMARY (perceptual) groundings are codebook-INDEPENDENT and ignore it.
+# codebook_version — DELIBERATELY DORMANT (decided phase-2b, 2026-06-06).
+#   It exists to invalidate CACHED ENCODINGS when a codebook MUTATES in place. The
+#   phase-2b shim makes codebooks IMMUTABLE handle-referenced objects (a `(CodebookRef c)`
+#   never mutates; "change" = register a new handle), and resonate/cleanup produce
+#   STANDALONE result HVs that retain no codebook dependency — so there is nothing to
+#   invalidate and this field is correctly left unused. Reserved for a future
+#   mutable-codebook / encoding-cache feature; do NOT wire it for immutable codebooks.
 DualIndex{Id, V}(backend::B=ArenaScanBackend()) where {Id, V, B <: ReverseBackend} =
     DualIndex{Id, V, B}(V[], UInt32[], falses(0), VectorHandle[],
         Dict{Id, VectorHandle}(), Dict{VectorHandle, Id}(), UInt32(0), backend)

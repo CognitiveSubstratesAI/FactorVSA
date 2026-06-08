@@ -149,4 +149,45 @@ rng() = MersenneTwister(0xF00D)
         unregister_factorvsa!()
         @test !haskey(reg, "fvsa-bind")
     end
+
+    @testset "Phase-2b — resonator + codebooks over MeTTa" begin
+        Random.seed!(20260606)              # deterministic (shim ops use default_rng)
+        register_factorvsa!()
+        reg = GROUNDED_REGISTRY
+        @test haskey(reg, "fvsa-resonate") && haskey(reg, "fvsa-codebook")
+
+        D = "4096"
+        c1 = reg["fvsa-codebook"]([D, "10"])
+        c2 = reg["fvsa-codebook"]([D, "10"])
+        c3 = reg["fvsa-codebook"]([D, "10"])
+        @test occursin(r"^\(CodebookRef \d+\)$", c1)
+
+        # pick true factor atoms, bind into a product H
+        a1 = reg["fvsa-codebook-atom"]([c1, "3"])
+        a2 = reg["fvsa-codebook-atom"]([c2, "7"])
+        a3 = reg["fvsa-codebook-atom"]([c3, "1"])
+        H = reg["fvsa-bind"]([a1, reg["fvsa-bind"]([a2, a3])])
+
+        # THE RESONATOR over MeTTa: recover the factor tuple (the headline capability)
+        res = reg["fvsa-resonate"]([H, c1, c2, c3])
+        hs = [m.match for m in eachmatch(r"\(VecRef \d+\)", res)]
+        @test length(hs) == 3
+        # recovered factors match the true atoms, order-aligned to the codebook args
+        @test parse(Float64, reg["fvsa-sim"]([hs[1], a1])) ≈ 1.0
+        @test parse(Float64, reg["fvsa-sim"]([hs[2], a2])) ≈ 1.0
+        @test parse(Float64, reg["fvsa-sim"]([hs[3], a3])) ≈ 1.0
+        # recompose score high for the true tuple (spurious-rejection signal)
+        @test parse(Float64, reg["fvsa-recompose-score"]([H, hs...])) > 0.9
+
+        # cleanup: a1 + light crosstalk → nearest atom is a1
+        z = reg["fvsa-bundle"]([a1, reg["fvsa-random"]([D])])
+        @test parse(Float64, reg["fvsa-sim"]([reg["fvsa-cleanup"]([z, c1]), a1])) ≈ 1.0
+
+        # immutable-codebook lifecycle: free → dangling handle fails loud
+        reg["fvsa-free-codebook"]([c3])
+        @test_throws Exception reg["fvsa-codebook-atom"]([c3, "1"])
+
+        unregister_factorvsa!()
+        @test !haskey(reg, "fvsa-resonate")
+    end
 end

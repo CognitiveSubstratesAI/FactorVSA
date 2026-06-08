@@ -13,14 +13,16 @@
 # string `(VecRef h)`. Grounded handlers take/return s-expression strings — for
 # dense results they store into the arena and return a fresh `(VecRef h')`.
 #
-# NOTE: codebook-dependent ops (cleanup / resonate / factorize) need a CodebookRef
-# registry — deferred to phase-2b (marked below). This shim covers create + algebra
-# + similarity, which exercise the full handle round-trip.
+# Covers base algebra (create / bind / bundle / sim) AND the resonator (phase-2b):
+# codebooks are immutable `(CodebookRef c)` handles; cleanup/resonate take a codebook
+# handle + produce standalone results — so this exposes the package's headline
+# capability (resonator factorization) to MeTTa, not just base VSA.
 # ─────────────────────────────────────────────────────────────────────────────
 
 using MORK: register_grounded!, is_grounded, GROUNDED_REGISTRY
 
-export FVSA_ARENA, register_factorvsa!, unregister_factorvsa!, vecref, parse_vecref
+export FVSA_ARENA, FVSA_CODEBOOKS, register_factorvsa!, unregister_factorvsa!
+export vecref, parse_vecref, cbref, parse_cbref
 
 # Process-global arena (Step-0 DualIndex). Id == the VecRef integer.
 const FVSA_ARENA = DualIndex{Int, HV{BipolarMAP}}()
@@ -57,18 +59,57 @@ _fvsa_get(s::AbstractString)::HV{BipolarMAP} = begin
     v
 end
 
+# Codebook registry (phase-2b). Codebooks are IMMUTABLE handle-referenced objects:
+# a `(CodebookRef c)` never mutates; "change" = register a new handle. Monotonic ids
+# (never reused → no ABA), fail-loud lookup. See the codebook_version note in
+# FactorVSA.jl for why this decouples from DualIndex.codebook_version.
+const FVSA_CODEBOOKS = Dict{Int, Codebook{BipolarMAP}}()
+const _FVSA_CB_NEXT_ID = Ref(0)
+
+function _fvsa_store_cb!(cb::Codebook{BipolarMAP})::Int
+    id = (_FVSA_CB_NEXT_ID[] += 1)
+    FVSA_CODEBOOKS[id] = cb
+    id
+end
+
+"Render a codebook id as the MeTTa s-expression `(CodebookRef c)`."
+cbref(id::Integer) = "(CodebookRef $id)"
+
+"Parse a `(CodebookRef c)` s-expression to its integer id (fail-loud on malformed)."
+function parse_cbref(s::AbstractString)
+    m = match(r"^\(\s*CodebookRef\s+(-?\d+)\s*\)$", strip(s))
+    m === nothing && error("FactorVSA: not a (CodebookRef c) handle: $(repr(s))")
+    cap = m.captures[1]
+    cap === nothing && error("FactorVSA: malformed (CodebookRef c): $(repr(s))")
+    parse(Int, cap)
+end
+
+_fvsa_get_cb(s::AbstractString)::Codebook{BipolarMAP} = begin
+    cb = get(FVSA_CODEBOOKS, parse_cbref(s), nothing)
+    cb === nothing && error("FactorVSA: dangling codebook handle $(repr(s))")
+    cb
+end
+
 """
     register_factorvsa!()
 
 Register FactorVSA's grounded ops into MORK's `GROUNDED_REGISTRY` so they are
 callable from MeTTa as `(fvsa-* …)` in an I-pattern position. Idempotent.
 
-Ops (handle = `(VecRef h)` string):
+Base algebra (handle = `(VecRef h)`):
 - `(fvsa-random D)`            → `(VecRef h)`   random ±1 hypervector of dim D
 - `(fvsa-bind  a b)`           → `(VecRef h)`   bind ⊗ (stored)
 - `(fvsa-unbind a b)`          → `(VecRef h)`   unbind
 - `(fvsa-bundle a b …)`        → `(VecRef h)`   bundle ⊕ then proj
 - `(fvsa-sim   a b)`           → scalar string  cosine similarity ⟨a,b⟩/D
+
+Phase-2b — codebooks + the resonator (handle = `(CodebookRef c)`):
+- `(fvsa-codebook D M)`              → `(CodebookRef c)`  random size-M codebook, dim D
+- `(fvsa-codebook-atom c i)`         → `(VecRef h)`       i-th atom of codebook c (1-based)
+- `(fvsa-cleanup z c)`               → `(VecRef h)`       nearest codebook atom to z
+- `(fvsa-resonate H c1 c2 …)`        → `((VecRef h1) …)`  recovered factor tuple (Alg 3)
+- `(fvsa-recompose-score H f1 f2 …)` → scalar string      ⟨H, f1⊗…⟩/D (reject spurious)
+- `(fvsa-free-codebook c)`           → `()`               drop the codebook handle
 """
 function register_factorvsa!()
     register_grounded!(
@@ -110,13 +151,74 @@ function register_factorvsa!()
             string(dot(a.data, b.data) / length(a.data))
         end
     )
-    # phase-2b (deferred): fvsa-cleanup / fvsa-resonate need a CodebookRef registry.
+    # ── phase-2b: codebooks + the resonator (the package's headline capability) ──
+    register_grounded!(
+        "fvsa-codebook",
+        args -> begin
+            length(args) == 2 || error("fvsa-codebook: needs D and M")
+            D = parse(Int, strip(args[1]))
+            M = parse(Int, strip(args[2]))
+            cbref(_fvsa_store_cb!(random_codebook(BipolarMAP, D, M)))
+        end
+    )
+    register_grounded!(
+        "fvsa-codebook-atom",
+        args -> begin
+            length(args) == 2 ||
+                error("fvsa-codebook-atom: needs (CodebookRef c) and index i")
+            cb = _fvsa_get_cb(args[1])
+            i = parse(Int, strip(args[2]))
+            (1 <= i <= length(cb)) ||
+                error("fvsa-codebook-atom: index $i out of range 1..$(length(cb))")
+            vecref(_fvsa_store!(HV{BipolarMAP}(cb.atoms[:, i])))
+        end
+    )
+    register_grounded!(
+        "fvsa-cleanup",
+        args -> begin
+            length(args) == 2 ||
+                error("fvsa-cleanup: needs (VecRef z) and (CodebookRef c)")
+            vecref(_fvsa_store!(cleanup(_fvsa_get(args[1]), _fvsa_get_cb(args[2]))))
+        end
+    )
+    register_grounded!(
+        "fvsa-resonate",
+        args -> begin
+            length(args) >= 2 ||
+                error("fvsa-resonate: needs (VecRef H) and ≥1 (CodebookRef c)")
+            H = _fvsa_get(args[1])
+            cbs = [_fvsa_get_cb(a) for a in args[2:end]]
+            factors, _ = factorize(H, cbs; restarts=3)   # multi-start (paper §4.3 robustness)
+            # one s-expr list of the recovered factor handles
+            "(" * join((vecref(_fvsa_store!(f)) for f in factors), " ") * ")"
+        end
+    )
+    register_grounded!(
+        "fvsa-recompose-score",
+        args -> begin
+            length(args) >= 2 ||
+                error("fvsa-recompose-score: needs (VecRef H) and ≥1 factor handle")
+            H = _fvsa_get(args[1])
+            fs = [_fvsa_get(a) for a in args[2:end]]
+            string(recompose_score(H, fs))
+        end
+    )
+    register_grounded!(
+        "fvsa-free-codebook",
+        args -> begin
+            length(args) == 1 || error("fvsa-free-codebook: needs (CodebookRef c)")
+            delete!(FVSA_CODEBOOKS, parse_cbref(args[1]))
+            "()"
+        end
+    )
     nothing
 end
 
 "Remove FactorVSA's grounded ops from the registry (for test isolation / teardown)."
 function unregister_factorvsa!()
-    for k in ("fvsa-random", "fvsa-bind", "fvsa-unbind", "fvsa-bundle", "fvsa-sim")
+    for k in ("fvsa-random", "fvsa-bind", "fvsa-unbind", "fvsa-bundle", "fvsa-sim",
+        "fvsa-codebook", "fvsa-codebook-atom", "fvsa-cleanup", "fvsa-resonate",
+        "fvsa-recompose-score", "fvsa-free-codebook")
         delete!(GROUNDED_REGISTRY, k)
     end
     nothing
