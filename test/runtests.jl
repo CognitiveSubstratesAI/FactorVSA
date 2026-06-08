@@ -3,7 +3,7 @@ using Random
 using LinearAlgebra
 using Base.Threads               # concurrency testset (DualIndex thread safety)
 using FactorVSA
-using MORK: GROUNDED_REGISTRY   # phase-2 shim test inspects the grounded registry
+using MORK: GROUNDED_REGISTRY, is_grounded   # shim tests inspect the grounded registry
 
 rng() = MersenneTwister(0xF00D)
 
@@ -190,6 +190,52 @@ rng() = MersenneTwister(0xF00D)
 
         unregister_factorvsa!()
         @test !haskey(reg, "fvsa-resonate")
+    end
+
+    @testset "Grounded-atom types — (VecRef h) is data, fvsa-* is operation" begin
+        register_factorvsa!()
+        reg = GROUNDED_REGISTRY
+        D = "1024"
+
+        # ── (1) ROUTING: only fvsa-* HEAD symbols are grounded operations. asource_new
+        # routes on the expr head; a (VecRef h) atom's head is `VecRef`, never registered,
+        # so it stays DATA (stored/matched structurally), never evaluated.
+        @test is_grounded("fvsa-bind") && is_grounded("fvsa-resonate")
+        @test !is_grounded("VecRef")          # the handle constructor is data, not an op
+        @test !is_grounded("(VecRef 5)")      # a handle atom is never itself executable
+        @test !is_grounded("CodebookRef")
+
+        # ── (2) IDENTITY is the handle, NOT the dense content. Distinct stores get distinct
+        # handles even for byte-identical vectors (arena id ≠ content hash) — so handle
+        # equality is string/atom equality, decoupled from vector similarity.
+        a = reg["fvsa-random"]([D])
+        @test occursin(r"^\(VecRef \d+\)$", a)
+        b = reg["fvsa-bind"]([a, a])          # a⊗a = all-ones (deterministic content)
+        c = reg["fvsa-bind"]([a, a])          # same content, fresh store
+        @test b != c                          # different handles…
+        @test parse_vecref(b) != parse_vecref(c)
+        @test parse(Float64, reg["fvsa-sim"]([b, c])) ≈ 1.0   # …identical content
+
+        # ── (3) ANTI-INSTRUCTION as regression: dense vectors NEVER cross into the grounded
+        # registry / trie. The registry is Dict{String,Function} (type-enforced: an HV can't
+        # be a value), and every dense-producing op RETURNS a handle STRING — the HV lives
+        # only in FVSA_ARENA, reachable by handle. This encodes MeTTaShim's core invariant.
+        @test eltype(values(reg)) <: Function          # no HV can ever be a registry value
+        for (op, args) in (("fvsa-random", [D]), ("fvsa-bind", [a, a]),
+            ("fvsa-unbind", [a, a]), ("fvsa-bundle", [a, a]))
+            r = reg[op](args)
+            @test r isa AbstractString                 # a STRING crosses the boundary…
+            @test !(r isa HV)                          # …never a dense vector
+            @test occursin(r"^\(VecRef \d+\)$", r)
+        end
+        # the dense result is retrievable from the ARENA by handle (it stayed there)
+        @test lookup_vector(FVSA_ARENA, parse_vecref(a)) isa HV{BipolarMAP}
+        # scalar ops cross as a parseable scalar STRING, not a vector
+        s = reg["fvsa-sim"]([a, a])
+        @test s isa AbstractString && parse(Float64, s) ≈ 1.0
+
+        unregister_factorvsa!()
+        @test !is_grounded("fvsa-bind")        # unregister tears down the routing
     end
 
     @testset "Concurrency — DualIndex thread safety" begin
