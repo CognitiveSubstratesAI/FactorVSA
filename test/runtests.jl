@@ -2,6 +2,7 @@ using Test
 using Random
 using LinearAlgebra
 using FactorVSA
+using MORK: GROUNDED_REGISTRY   # phase-2 shim test inspects the grounded registry
 
 rng() = MersenneTwister(0xF00D)
 
@@ -115,5 +116,37 @@ rng() = MersenneTwister(0xF00D)
 
         rate, _ = resonator_success_rate(2048, [10, 10, 10]; trials=40, beta=4.0, rng=r)
         @test rate > 0.8                     # resonator works in the margin regime
+    end
+
+    @testset "Phase-2 — MeTTa shim (grounded ops over handle-arena)" begin
+        register_factorvsa!()
+        reg = GROUNDED_REGISTRY
+        @test haskey(reg, "fvsa-bind") && haskey(reg, "fvsa-sim")
+
+        # create → handle round-trips through (VecRef h)
+        a = reg["fvsa-random"](["1024"])
+        b = reg["fvsa-random"](["1024"])
+        @test occursin(r"^\(VecRef \d+\)$", a)
+        @test parse_vecref(a) isa Int
+        @test vecref(parse_vecref(a)) == a
+
+        # similarity: self ≈ 1, distinct ~ 0 (scalar string result)
+        @test parse(Float64, reg["fvsa-sim"]([a, a])) ≈ 1.0
+        @test abs(parse(Float64, reg["fvsa-sim"]([a, b]))) < 0.15
+
+        # bind then unbind recovers b (BipolarMAP self-inverse): sim(b, unbind(a,bind(a,b))) ≈ 1
+        ab = reg["fvsa-bind"]([a, b])
+        b2 = reg["fvsa-unbind"]([a, ab])
+        @test parse(Float64, reg["fvsa-sim"]([b, b2])) ≈ 1.0
+
+        # bundle yields a handle
+        @test occursin(r"^\(VecRef \d+\)$", reg["fvsa-bundle"]([a, b]))
+
+        # dangling / malformed handles fail loud (never silently mis-route)
+        @test_throws Exception reg["fvsa-sim"](["(VecRef 999999)", a])
+        @test_throws Exception parse_vecref("(NotAHandle 1)")
+
+        unregister_factorvsa!()
+        @test !haskey(reg, "fvsa-bind")
     end
 end

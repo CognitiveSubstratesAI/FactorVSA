@@ -234,24 +234,31 @@ boundary and via the Step-0 `(VecRef h)` handle binding.
 
 ---
 
-## 6. MeTTa OP-INTEGRATION (two phases — phase-2 only after the gate)
+## 6. MeTTa OP-INTEGRATION — IMPLEMENTED (`MeTTaShim.jl`)
 
-The substrate channel is the `ASource`/`source_factor` mechanism (§2), not the
-grounding registry for dense data.
+**CORRECTED after an upstream cross-check (2026-06-06, dev-zone MORK kernel+server+docs).**
+The original draft proposed a custom `FactorVSASource <: MORK.ASource`. The cross-check
+showed that is *unnecessary* and over-engineered: a custom source would require modifying
+MORK's closed `asource_new` dispatch, and it's only the right idiom when dense data must
+flow *through* the trie/zipper machinery (the GPU-einsum case). FactorVSA keeps vectors in
+its own arena and references them by a tiny `(VecRef h)` handle string — so the existing
+string-based grounded channel suffices, with **zero MORK changes**.
 
-- **Phase 1 (for the gate milestone): scalar via the existing grounded path.** The
-  gate measures *scalars* (a cleanup margin, a resonator success rate, a similarity
-  score). Expose those to MeTTa with the existing `register_grounded!`
-  (string-in/string-out, `GroundedSource`). No new MORK code needed. This is enough
-  for everything up to and including Step 4.
-- **Phase 2 (production dense ops, after the gate): a new `ASource` over an arena
-  handle.** Dense ops (`v-sim`, `resonate`, bind/unbind that return hypervectors) must
-  not serialize vectors into the trie. Add `struct FactorVSASource <: MORK.ASource`
-  carrying the `(VecRef h)` handle, implement `source_factor(s::FactorVSASource,
-  btm::PathMap{UnitVal})`, and a case in `asource_new`. The vector stays in the
-  FactorVSA arena; the trie holds only `h`. Mirror `BTMSource`/`ACTSource` as the
-  reference pattern. (This is the same channel the MORK authors use for GPU einsum via
-  custom sink/source zippers over opaque handles.)
+Upstream finding: MORK (kernel *and* server) has **no grounding of its own**; the roadmap
+delegates grounding to the consuming runtime as "grounded ops inverted into queries". The
+Julia port realizes this as `register_grounded!` + `GroundedSource` (an I-pattern source),
+and `asource_new` auto-routes any registered name to it. So the shim is upstream-aligned.
+
+**Implemented design** (`src/MeTTaShim.jl`):
+- Dense vectors live in a process-global arena (the Step-0 `DualIndex`), referenced from
+  MeTTa only by a `(VecRef h)` handle string. Dense data NEVER enters the trie.
+- `register_factorvsa!()` registers grounded ops via `register_grounded!`:
+  `(fvsa-random D)`, `(fvsa-bind a b)`, `(fvsa-unbind a b)`, `(fvsa-bundle a …)` →
+  `(VecRef h)`; `(fvsa-sim a b)` → scalar. Handlers parse handle-strings, op in the arena,
+  store dense results, return a fresh handle. Both scalar and dense results go through the
+  one string channel (dense via handle).
+- **Phase-2b (deferred):** codebook-dependent ops (`cleanup`/`resonate`/`factorize`) need a
+  `CodebookRef` registry — not yet built.
 
 ---
 

@@ -6,21 +6,19 @@ version = "0.1.0"
 [deps]
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 MORK = "162375cb-4023-4ef9-895b-22c0041d5c13"
-PathMap = "a8b3d4e5-f012-4567-89ab-cdef01234567"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 
 [sources]
-# Local-first dev-links to the sibling hardened (CognitiveSubstratesAI) checkouts,
-# matching MORKTensorNetworks. FactorVSA deps PathMap + MORK DIRECTLY, so both are
-# listed here (Julia 1.11+ [sources] only accepts direct deps; transitive ones
-# resolve through the dep's own [sources]). Flip to git URLs on org migration.
+# Local-first dev-link to the sibling hardened (CognitiveSubstratesAI) MORK checkout.
+# FactorVSA depends on MORK DIRECTLY (the phase-2 grounded-op shim); PathMap is NOT a
+# direct dependency — it resolves transitively through MORK's own [sources]
+# (Julia 1.11+ propagates a path-dep's [sources]; and [sources] only accepts direct
+# deps). Flip to a git URL on org migration.
 MORK = {path = "../MORK"}
-PathMap = {path = "../PathMap"}
 
 [compat]
 LinearAlgebra = "1"
 MORK = "0.1"
-PathMap = "0.3"
 Random = "1"
 Test = "1"
 julia = "1.12"

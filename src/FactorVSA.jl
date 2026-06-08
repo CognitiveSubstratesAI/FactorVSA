@@ -6,13 +6,15 @@ Resonator-factored Vector-Symbolic Architecture over fixed-width hypervectors.
 Implements the VSA algebra + resonator factorization of Goertzel (2026),
 "Resonator-Factored Hierarchical Hypervector Embeddings" (see SPEC.md). This is
 the *vector / hypervector* substrate leg — sibling to MORKTensorNetworks (the
-sparse-tensor / einsum leg). It depends on PathMap + MORK ONLY (and stdlib).
+sparse-tensor / einsum leg). It depends on MORK (which brings PathMap transitively)
+plus stdlib.
 
-STATUS: Steps 0–4 IMPLEMENTED for the `BipolarMAP` backend (the gate-scoped part).
-`PhasorHRR` methods remain `_todo` stubs. Step 5 (R-HMH / ColBaC towers) is FENCED
-until the Step-4 margin gate passes. The MORK/PathMap MeTTa-integration shim
-(phase-2 `ASource` over `(VecRef h)` handles) is NOT built yet — so MORK/PathMap
-are declared deps but unreferenced until then (Aqua stale_deps flags this; expected).
+STATUS: Steps 0–4 IMPLEMENTED for the `BipolarMAP` backend (gate-scoped), Step-4
+margin gate PASSED, and the phase-2 MeTTa-integration shim is built (`MeTTaShim.jl`
+— grounded `(fvsa-*)` ops over a handle-referenced arena via MORK's
+`register_grounded!`; cross-checked upstream-aligned, zero MORK changes).
+`PhasorHRR` methods remain `_todo` stubs. Step 5 (R-HMH / ColBaC towers) is FENCED.
+Phase-2b (codebook-dependent `cleanup`/`resonate` ops) is deferred.
 """
 module FactorVSA
 
@@ -23,9 +25,11 @@ using Random
 import Base: bind
 import LinearAlgebra: factorize
 
-# MORK / PathMap are core deps for the phase-2 MeTTa-integration shim (the
-# `(VecRef h)` handle atoms + the `ASource`). The pure VSA algebra + the gate
-# (Steps 0-4) need neither — they stay unreferenced until the shim is built.
+# MORK is used by the phase-2 MeTTa-integration shim (MeTTaShim.jl) — grounded ops
+# via `register_grounded!`, with dense vectors kept in the FactorVSA arena and
+# referenced from MeTTa only by `(VecRef h)` handle strings. The pure VSA algebra
+# + the gate (Steps 0-4) don't need it. PathMap comes transitively through MORK
+# (FactorVSA has no direct PathMap use), so it is not a direct dependency.
 
 export Backend, BipolarMAP, PhasorHRR
 export HV, dim, backend
@@ -403,5 +407,10 @@ function resonator_success_rate(D::Int, factor_sizes::Vector{Int};
     end
     (succ / trials, Float64(iterations))
 end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase-2 — MeTTa integration shim (grounded ops over the arena; needs MORK)
+# ─────────────────────────────────────────────────────────────────────────────
+include("MeTTaShim.jl")
 
 end # module FactorVSA
