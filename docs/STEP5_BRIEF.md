@@ -84,12 +84,16 @@ not a patch. Step 5c/5d and the ColBaC-HDC certificates do not proceed until GO.
 `consolidate(episodes) → template`: align corresponding slots (unbind/rebind), weighted
 bundle into a schema/script/skill template. **Acceptance:** repeated structured episodes
 yield a template whose slot pattern is recoverable; idiosyncratic anchors wash out.
-`# SPEC?:` consolidation forms NEW prototype-like template HVs over time — adjacent to the
-"mutable/growing codebook" feature deferred when we chose immutable `(CodebookRef c)`. Verify
-up front (don't discover): a consolidated template should be a NEW immutable HV (a fresh
-arena handle), NOT an in-place mutation of an existing codebook. If 5c ever needs to *grow a
-codebook* with consolidated prototypes, that crosses the immutable-codebook boundary and is
-the reserved-`codebook_version` feature, not a quiet edit — stop and flag it.
+**RESOLVED (2026-06-06):** consolidation produces template **HVs** (new immutable arena
+handles); it does **NOT** mutate or grow codebooks. To turn consolidated templates into a
+cleanup dictionary, build a **new immutable codebook** from them (a new `CodebookRef` —
+"change = new handle"), exactly the phase-2b commitment. So 5c stays inside the
+immutable-codebook model and never touches the reserved `codebook_version` path. (If a
+future feature genuinely needs an in-place GROWING codebook, that is the deferred
+mutable-codebook feature via `codebook_version`, not a quiet edit — stop and flag.)
+NOTE for in-episode scoring: do NOT reuse Step-4's bare-product thresholds (`score>0.9`)
+inside episodes — slots come off a PROJECTED bundle so absolute scores are ~0.5; compare
+true-vs-spurious / use recovery-margin, not an absolute bare-product cutoff.
 
 ### 5d — ColBaC-HDC representation layer (§9 Eq 84–90) — after the gate
 Same machinery, columnar schema:

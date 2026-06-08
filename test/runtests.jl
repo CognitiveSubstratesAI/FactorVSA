@@ -229,4 +229,63 @@ rng() = MersenneTwister(0xF00D)
         # rejection signal still works. (This crosstalk is exactly what the 5-gate measures.)
         @test score > 0.3
     end
+
+    @testset "Step 5c — episodic-semantic consolidation (Eq 77)" begin
+        Random.seed!(20260606)
+        D = 4096
+        rb = RoleBook(D)
+        cbAct = random_codebook(BipolarMAP, D, 8)
+        cbObj = random_codebook(BipolarMAP, D, 8)
+        fa = HV{BipolarMAP}(cbAct.atoms[:, 2])          # COMMON actor across all episodes
+        # 8 episodes: same actor, idiosyncratic object each
+        eps = [
+            Episode(random_hv(BipolarMAP, D);
+                slots=Dict(:actor => (:agent, fa),
+                    :object => (:thing, HV{BipolarMAP}(cbObj.atoms[:, i])))) for i in 1:8
+        ]
+        tmpl = consolidate(eps, rb)
+        # schema formation: the RECURRING slot (actor) is recoverable from the template…
+        @test recover_slot(tmpl, :actor, :agent, rb, cbAct) == fa
+        # …and it has a CLEARER margin than the varying slot (idiosyncratic objects wash out)
+        m_actor = cleanup_margin_of(
+            bind(role!(rb, Symbol("mtype_", :agent)), bind(role!(rb, :actor), tmpl)), cbAct)
+        m_object = cleanup_margin_of(
+            bind(role!(rb, Symbol("mtype_", :thing)), bind(role!(rb, :object), tmpl)), cbObj
+        )
+        @test m_actor > m_object
+        # immutable: template is a fresh HV, codebooks untouched (a new dict would be a new CodebookRef)
+        @test tmpl isa HV{BipolarMAP}
+    end
+
+    @testset "Step 5d — ColBaC-HDC representation layer (§9)" begin
+        Random.seed!(20260606)
+        D = 4096
+        rb = RoleBook(D)
+        cbM = random_codebook(BipolarMAP, D, 16)
+        m1 = HV{BipolarMAP}(cbM.atoms[:, 4])
+        m2 = HV{BipolarMAP}(cbM.atoms[:, 9])
+        m3 = HV{BipolarMAP}(cbM.atoms[:, 1])
+        col = Column([(:K, 0, :center, m1), (:L, 1, :lateral, m2), (:B, 2, :bridge, m3)])
+        Hm = encode_column(col, rb)
+
+        # Eq 84 ≡ Eq 11: same unbind-cleanup machinery recovers any triple-tagged motif
+        @test recover_motif(Hm, :K, 0, :center, rb, cbM) == m1
+        @test recover_motif(Hm, :B, 2, :bridge, rb, cbM) == m3
+
+        # support code (Eq 85): a column is recoverable from the active support
+        colB = Column([(:K, 0, :center, HV{BipolarMAP}(cbM.atoms[:, 7]))])
+        enc = Dict(1 => Hm, 2 => encode_column(colB, rb))
+        HS = support_code(enc, [1, 2], rb)
+        @test dot(bind(role!(rb, Symbol("col_", 1)), HS).data, Hm.data) / D > 0.3
+
+        # certificate (Eq 86-87): a channel is recovered from the structured cert hypervector
+        cbCh = random_codebook(BipolarMAP, D, 8)
+        zshared = HV{BipolarMAP}(cbCh.atoms[:, 3])
+        Z = certificate(Dict(:shared => zshared), Hm, rb)
+        @test cleanup(bind(role!(rb, :cert_shared), Z), cbCh) == zshared
+
+        # HDC audit quantities: a clean atom is unambiguous (margin>0, M_conf==1)
+        @test cleanup_margin_of(m1, cbM) > 0
+        @test confusability(m1, cbM; gamma=0.01) == 1
+    end
 end

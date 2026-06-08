@@ -418,8 +418,10 @@ end
 include("MeTTaShim.jl")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 5 — R-HMH episodic memory (§8); 5a encode + 5b recall + 5-gate instrumentation
+# Step 5 — R-HMH episodic memory (§8); 5a encode + 5b recall + 5c consolidate + gate
+# + ColBaC-HDC representation layer (§9). Two schemas over one machinery (Eq 84 ≡ Eq 11).
 # ─────────────────────────────────────────────────────────────────────────────
 include("RHMH.jl")
+include("ColBaCHDC.jl")
 
 end # module FactorVSA

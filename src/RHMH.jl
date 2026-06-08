@@ -15,7 +15,7 @@
 # real go/no-go — do not build 5c/5d until it passes (see STEP5_BRIEF.md).
 # ─────────────────────────────────────────────────────────────────────────────
 
-export RoleBook, role!, Episode, encode_episode, recover_slot, complete_slot
+export RoleBook, role!, Episode, encode_episode, recover_slot, complete_slot, consolidate
 export episode_recovery_rate
 
 "A registry of named role atoms (deterministic per name once created; seed externally)."
@@ -109,6 +109,31 @@ complete_slot(H_E::HV{BipolarMAP}, role::Symbol, type::Symbol, rb::RoleBook,
     factorize(
         bind(role!(rb, _mtype(type)), bind(role!(rb, role), H_E)), factor_cbs; restarts=3
     )
+
+# ── 5c — episodic-semantic consolidation (Eq 77) ─────────────────────────────
+"""
+    consolidate(episodes, rb; weights=nothing) → H_template
+
+Episodic-semantic consolidation (Eq 77): `Normalize(Σ_i w_i H_{E_i})`. Episodes sharing
+`rb` (the same role atoms) are aligned by construction; a weighted bundle of their codes
+forms a schema/script/template. Slots whose filler RECURS reinforce in the template;
+idiosyncratic fillers average out (recoverable common slots = schema formation).
+
+IMMUTABLE-CODEBOOK CONTRACT: the template is a NEW immutable HV (a fresh arena handle).
+Consolidation does NOT mutate or grow any codebook. To make templates into a cleanup
+dictionary, build a NEW immutable codebook from them (a new `CodebookRef`).
+"""
+function consolidate(episodes::Vector{Episode}, rb::RoleBook;
+    weights::Union{Nothing, Vector{Float64}}=nothing)
+    isempty(episodes) && error("consolidate: needs ≥1 episode")
+    w = weights === nothing ? fill(1.0, length(episodes)) : weights
+    length(w) == length(episodes) || error("consolidate: weights length mismatch")
+    acc = zeros(Float64, rb.dim)
+    for (wi, E) in zip(w, episodes)
+        acc = acc .+ wi .* encode_episode(E, rb).data
+    end
+    proj(HV{BipolarMAP}(acc))
+end
 
 # ── 5-GATE instrumentation (§8.6 admissibility) ──────────────────────────────
 """
