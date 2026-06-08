@@ -190,4 +190,43 @@ rng() = MersenneTwister(0xF00D)
         unregister_factorvsa!()
         @test !haskey(reg, "fvsa-resonate")
     end
+
+    @testset "Step 5a/5b — R-HMH episode encode + resonant recall" begin
+        Random.seed!(20260606)              # role! + codebooks use default_rng → deterministic
+        D = 4096
+        rb = RoleBook(D)
+        cbA = random_codebook(BipolarMAP, D, 16)
+        cbB = random_codebook(BipolarMAP, D, 16)
+        fa = HV{BipolarMAP}(cbA.atoms[:, 5])
+        fb = HV{BipolarMAP}(cbB.atoms[:, 11])
+        slots = Dict(:actor => (:agent, fa), :object => (:thing, fb))
+
+        # 5a encode → 5b recover each slot filler (role-masked unbind + cleanup)
+        H = encode_episode(Episode(random_hv(BipolarMAP, D); slots=slots), rb)
+        @test recover_slot(H, :actor, :agent, rb, cbA) == fa
+        @test recover_slot(H, :object, :thing, rb, cbB) == fb
+
+        # a typed relation is bounded crosstalk — slots still recover
+        H2 = encode_episode(
+            Episode(random_hv(BipolarMAP, D); slots=slots,
+                relations=[(:acts_on, :actor, :object)]), rb)
+        @test recover_slot(H2, :actor, :agent, rb, cbA) == fa
+        @test recover_slot(H2, :object, :thing, rb, cbB) == fb
+
+        # product-filler completion (Eq 73): resonate INSIDE the episode
+        c1 = random_codebook(BipolarMAP, D, 10)
+        c2 = random_codebook(BipolarMAP, D, 10)
+        p1 = HV{BipolarMAP}(c1.atoms[:, 3])
+        p2 = HV{BipolarMAP}(c2.atoms[:, 8])
+        H3 = encode_episode(
+            Episode(random_hv(BipolarMAP, D); slots=Dict(:goal => (:plan, bind(p1, p2)))),
+            rb)
+        facs, score = complete_slot(H3, :goal, :plan, rb, [c1, c2])
+        @test facs[1] == p1 && facs[2] == p2     # resonator recovers the true factors
+        # NOTE: the slot is unbound from a PROJECTED (sign'd) episode bundle, so the
+        # recovered filler is noisy — absolute recompose score is ~0.5, not ~1 (bare-product
+        # margins don't apply in-episode). What matters is true-tuple ≫ spurious (~0): the
+        # rejection signal still works. (This crosstalk is exactly what the 5-gate measures.)
+        @test score > 0.3
+    end
 end
