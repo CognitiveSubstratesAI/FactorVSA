@@ -19,7 +19,7 @@ for k in ks
     @printf("%10d", k)
 end
 println()
-pfail = Dict{Tuple{Int,Int},Float64}()
+pfail = Dict{Tuple{Int, Int}, Float64}()
 for D in Ds
     @printf("%6d", D)
     for k in ks
@@ -60,12 +60,14 @@ println("  → c values all positive & within 4× of each other: ", c_ok)
 
 println("\n  M-dependence at D=512,k=4 (expect slow ~log growth):")
 for Mv in [16, 64, 256, 1024]
-    @printf("    M=%5d : P[fail]=%.4f\n", Mv, cleanup_margin(512, 4, Mv; trials=600, rng=rng))
+    @printf(
+        "    M=%5d : P[fail]=%.4f\n", Mv, cleanup_margin(512, 4, Mv; trials=600, rng=rng)
+    )
 end
 
 # ── E4: resonator success vs D (3 factors, |C_f|=10) ─────────────────────────
 println("\n## E4 — resonator success rate (F=3, |C_f|=10)")
-e4 = Tuple{Int,Float64}[]
+e4 = Tuple{Int, Float64}[]
 for D in [128, 256, 512, 1024, 2048, 4096]
     rate, _ = resonator_success_rate(D, [10, 10, 10]; trials=200, beta=4.0, rng=rng)
     push!(e4, (D, rate))
@@ -89,7 +91,7 @@ function all_recover_rate(D, N; pool=256, trials=200, rng=rng)
     end
     ok / trials
 end
-e3 = Tuple{Int,Float64}[]
+e3 = Tuple{Int, Float64}[]
 for N in [2, 4, 8, 16, 32, 64, 128]
     r = all_recover_rate(512, N; trials=200, rng=rng)
     push!(e3, (N, r))
