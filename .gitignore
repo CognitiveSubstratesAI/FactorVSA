@@ -1,0 +1,48 @@
+# Claude Code local settings — not for public repos
+.claude/
+
+# Julia package manager — Manifest is environment-specific (path-deps ../MORK,
+# ../PathMap); CI clones the siblings adjacent and resolves fresh.
+/Manifest.toml
+/Manifest.toml.bak
+
+# Julia build artifacts
+*.jl.cov
+*.jl.mem
+*.orig
+*.ji
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.iml
+
+# Runtime / coverage
+/tmp/
+*.log
+*.pid
+*.lock
+/lcov.info
+coverage/
+docs/build/
+docs/Manifest.toml
+
+# Environment / secrets (never commit)
+.env
+.env.*
+*.key
+*.pem
+*.cert
+secrets.toml
