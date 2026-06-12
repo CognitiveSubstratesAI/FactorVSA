@@ -323,6 +323,31 @@ rng() = MersenneTwister(0xF00D)
         unregister_factorvsa!()
     end
 
+    @testset "Dual index — content-seeded determinism (reconstructible by content)" begin
+        # An atom's embedding is a PURE FUNCTION of its content-id (leaf seed = FNV-1a of the cid;
+        # roles/marker fixed-seed), so re-embedding reconstructs the IDENTICAL vector — across
+        # processes/machines, and from an EMPTY cache. (Verified across two fresh processes; here we
+        # gate the within-process equivalent, which has teeth: random-leaf code FAILS the cache-clear
+        # reconstruction below.)
+        register_factorvsa!()
+        reg = GROUNDED_REGISTRY
+        empty!(FactorVSA.FVSA_EMBED)
+        hv(v) = lookup_vector(FVSA_ARENA, parse_vecref(v))
+
+        # the seed is a stable pure function of the content-id (canonical, not Base.hash)
+        @test FactorVSA._stable_seed(content_id("dog")) == FactorVSA._stable_seed(content_id(" dog "))
+        @test FactorVSA._stable_seed(content_id("dog")) != FactorVSA._stable_seed(content_id("cat"))
+
+        # reconstructible: clear the cache, re-embed → byte-identical vector (NOT a fresh random one)
+        v_dog = copy(hv(reg["fvsa-embed"](["dog"])).data)
+        v_pd  = copy(hv(reg["fvsa-embed"](["(pet dog)"])).data)
+        empty!(FactorVSA.FVSA_EMBED)
+        @test hv(reg["fvsa-embed"](["dog"])).data == v_dog        # leaf reconstructible from content
+        @test hv(reg["fvsa-embed"](["(pet dog)"])).data == v_pd   # compound too (seed propagates via encode)
+
+        unregister_factorvsa!()
+    end
+
     @testset "Concurrency — DualIndex thread safety" begin
         # The arena is lock-guarded; an UNGUARDED version throws BoundsError under a
         # 2-thread insert stress (proven before the fix). This testset is only

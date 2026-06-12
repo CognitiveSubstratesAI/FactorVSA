@@ -168,12 +168,28 @@ function _to_vsatree(x::Vector)
     VSATree(marker, VSATree[_to_vsatree(e) for e in x], nothing)
 end
 
-# the HV for a parsed node: leaf → random seed; compound → compositional encode (bounded)
-_node_hv(::AbstractString, D::Int) = random_hv(BipolarMAP, D)
-function _node_hv(node::Vector, D::Int)
+# Stable seed from content-id bytes — FNV-1a/64. Unlike Base.hash (version-dependent, no guarantee),
+# this is a fixed pure function of the bytes → identical seed across processes, Julia versions, and
+# machines. So a leaf's vector is a pure function of its atom content (the arena is regeneratable).
+function _stable_seed(bytes::Vector{UInt8})::UInt64
+    h = 0xcbf29ce484222325                  # FNV-1a 64-bit offset basis
+    for b in bytes
+        h = (h ⊻ UInt64(b)) * 0x100000001b3  # XOR then prime; wraps mod 2^64
+    end
+    h
+end
+
+# A leaf's HV is a DETERMINISTIC random ±1 vector seeded by its content-id — same atom → same vector
+# everywhere, with no shared state. Distinct ids → independent seeds → near-orthogonal vectors.
+_seeded_leaf_hv(cid::Vector{UInt8}, D::Int) =
+    random_hv(BipolarMAP, D, Random.MersenneTwister(_stable_seed(cid)))
+
+# compound → compositional encode (bounded); deterministic given the (deterministic) leaf seeds +
+# the fixed-seed role table & marker, so the whole encoding is content-derived and reproducible.
+function _compound_hv(node::Vector, D::Int)
     if _struct_depth(node) > _EMBED_L_MAX || _struct_maxbranch(node) > _EMBED_BRANCH_MAX
         @warn "fvsa-embed: atom exceeds encode bounds — opaque seed (not decodable)" maxlog=3
-        return random_hv(BipolarMAP, D)
+        return _seeded_leaf_hv(Vector{UInt8}(string(node)), D)   # still deterministic by structure
     end
     roles, _ = _embed_roles()
     encode(_to_vsatree(node), roles)
@@ -185,11 +201,13 @@ atom on every call — keyed by MORK content-id — so one identity addresses bo
 (MORK trie) and its vector (FactorVSA arena). Idempotent; the lock makes get-or-create atomic
 (reentrant, so nested leaf embedding composes; lock order embed→arena, never reversed).
 
-ENCODING (HDC paper §4.1, Eq 11): a LEAF symbol gets a fresh random ±1 seed. A COMPOUND atom is
-COMPOSITIONALLY encoded from its parts' embeddings (`encode(VSATree, Roles)`), so it is
-VSA-decodable — `descend`/unbind recover the parts — and two compounds sharing structure get
-similar codes. Bounded by the role table (depth ≤ $_EMBED_L_MAX, branch ≤ $_EMBED_BRANCH_MAX);
-beyond it, falls back to an opaque seed (logged). Nested leaves are content-addressed and shared.
+DETERMINISTIC / content-derived: a LEAF's vector is a random ±1 HV seeded by a STABLE hash of its
+content-id (FNV-1a), and a COMPOUND is COMPOSITIONALLY encoded from its parts (`encode(VSATree,
+Roles)`, HDC paper §4.1/Eq 11) over a fixed-seed role table. So the embedding is a PURE FUNCTION of
+atom content — identical across processes/machines, and the arena is regeneratable (no persistence
+needed). The cache (`FVSA_EMBED`) is therefore a memoization, not the source of identity. Compounds
+are VSA-decodable (unbind a part's role to recover it); structure-similar atoms get similar codes;
+nested leaves are shared. Bounded depth ≤ $_EMBED_L_MAX / branch ≤ $_EMBED_BRANCH_MAX (fallback logged).
 """
 _fvsa_embed!(sexpr::AbstractString, D::Int=FVSA_EMBED_DIM[])::Int = _embed_id(sexpr, D)
 
@@ -198,7 +216,9 @@ function _embed_id(sexpr::AbstractString, D::Int=FVSA_EMBED_DIM[])::Int
     @lock _FVSA_EMBED_LOCK begin
         existing = get(FVSA_EMBED, cid, nothing)
         existing !== nothing && return existing
-        id = _fvsa_store!(_node_hv(_parse_sexpr(sexpr), D))
+        node = _parse_sexpr(sexpr)
+        hv = node isa Vector ? _compound_hv(node, D) : _seeded_leaf_hv(cid, D)
+        id = _fvsa_store!(hv)
         FVSA_EMBED[cid] = id
         return id
     end
