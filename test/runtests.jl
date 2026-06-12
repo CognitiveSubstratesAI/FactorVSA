@@ -238,6 +238,53 @@ rng() = MersenneTwister(0xF00D)
         @test !is_grounded("fvsa-bind")        # unregister tears down the routing
     end
 
+    @testset "Dual index — content-addressed embedding ↔ MORK id" begin
+        # The COMPLEMENT of the identity test above: scratch vectors have HANDLE identity
+        # (same content ⇒ distinct handles), but ATOM EMBEDDINGS have CONTENT identity —
+        # the same atom ⇒ the same handle, keyed by MORK's content-id. This is what makes
+        # the vector index genuinely DUAL to the symbolic (MORK) index (Hyperon WP §2/§7.8).
+        empty!(FVSA_EMBED)                       # isolate from any prior embed state
+        register_factorvsa!()
+        reg = GROUNDED_REGISTRY
+        @test is_grounded("fvsa-embed")
+
+        # ── (1) IDEMPOTENT / content-addressed: same atom ⇒ same handle, every call.
+        d1 = reg["fvsa-embed"](["dog"])
+        d2 = reg["fvsa-embed"](["dog"])
+        @test occursin(r"^\(VecRef \d+\)$", d1)
+        @test d1 == d2                                   # SAME handle (vs fvsa-random: distinct)
+        @test parse(Float64, reg["fvsa-sim"]([d1, d2])) ≈ 1.0
+
+        # ── (2) CANONICAL: MORK re-serializes, so whitespace variants of the SAME atom are
+        # one id — but `dog` (symbol) and `(dog)` (1-expr) are DIFFERENT atoms (content rightly
+        # distinguishes them; that's the point of content-addressing).
+        @test content_id("dog") == content_id(" dog") == content_id("dog ")   # same symbol
+        @test content_id("(pet dog)") == content_id("( pet   dog )")          # same compound
+        @test content_id("dog") != content_id("(dog)")                       # symbol ≠ 1-list
+        @test reg["fvsa-embed"]([" dog "]) == d1         # same atom, different surface text
+
+        # ── (3) DISTINCT atoms ⇒ distinct handles + near-orthogonal vectors.
+        cat = reg["fvsa-embed"](["cat"])
+        @test cat != d1
+        @test abs(parse(Float64, reg["fvsa-sim"]([d1, cat]))) < 0.15
+
+        # ── (4) the embedding IS a normal (VecRef h) — composes with the rest of the algebra.
+        bound = reg["fvsa-bind"]([d1, cat])
+        @test parse(Float64, reg["fvsa-sim"]([reg["fvsa-unbind"]([cat, bound]), d1])) ≈ 1.0
+
+        # ── (5) compound atoms are content-addressed too, distinct from their parts.
+        comp = reg["fvsa-embed"](["(pet dog)"])
+        @test comp == reg["fvsa-embed"](["(pet dog)"])   # idempotent
+        @test comp != d1                                 # the compound ≠ its symbol
+
+        # ── (6) the dual map links the MORK content-id to the stored vector slot.
+        @test haskey(FVSA_EMBED, content_id("dog"))
+        @test lookup_vector(FVSA_ARENA, FVSA_EMBED[content_id("dog")]) isa HV{BipolarMAP}
+
+        unregister_factorvsa!()
+        @test !is_grounded("fvsa-embed")
+    end
+
     @testset "Concurrency — DualIndex thread safety" begin
         # The arena is lock-guarded; an UNGUARDED version throws BoundsError under a
         # 2-thread insert stress (proven before the fix). This testset is only
