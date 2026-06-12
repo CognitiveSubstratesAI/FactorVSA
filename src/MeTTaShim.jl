@@ -94,30 +94,113 @@ Bruijn NewVar). Embeddings target ground/named atoms, so both caveats are moot i
 """
 content_id(sexpr::AbstractString)::Vector{UInt8} = sexpr_to_expr(sexpr).buf
 
-"""
-Content-addressed atom embedding (the dual-index seam). Returns the SAME `(VecRef h)` for the
-same atom on every call — keyed by MORK content-id — so one identity addresses both the
-symbolic atom (MORK trie) and its vector (FactorVSA arena). On first sight of an atom, mints a
-fresh random ±1 seed HV of dim `D`; idempotent thereafter (`D` ignored once embedded). The
-get-or-create is locked so concurrent eval can't mint two vectors for one atom. Lock order:
-embed-lock → arena-lock (never the reverse), so it composes with `_fvsa_store!` without deadlock.
+# ── Compositional encoding for COMPOUND atoms (HDC paper §4.1, Eq 11) ──────────
+# A compound atom's vector is BUILT from its parts' embeddings via encode(VSATree, Roles), so it
+# is VSA-decodable (descend/unbind recovers the parts) — not an opaque seed. A LEAF symbol keeps a
+# random content-addressed seed; a compound `(h a b)` maps to a VSATree (a fixed expr-node marker
+# at each internal node, leaf children = their content-addressed embeddings) and is encoded once at
+# the root. Roles + marker are deterministic (fixed seed) so the encoding is reproducible within a
+# process. Depth/branch are bounded by the role table; beyond it we fall back to an opaque seed
+# (logged) rather than silently mis-encode.
+const _EMBED_L_MAX = 8           # max tree depth covered by the role table
+const _EMBED_BRANCH_MAX = 16     # max children per node covered by the role table
+const _EMBED_ROLES = Ref{Union{Roles, Nothing}}(nothing)
+const _EMBED_MARKER = Ref{Union{HV{BipolarMAP}, Nothing}}(nothing)
+const _EMBED_ROLES_DIM = Ref(0)
 
-SCOPE (honest, per the HDC paper §4.1/§8.2): this is the dual *index* — content-addressed
-*identity*. A COMPOUND atom currently gets an OPAQUE seed (content-addressed but NOT
-compositionally decodable). The paper's full dual index COMPOSITIONALLY encodes structure
-(Eq 11 `encode(VSATree, Roles)`, already implemented in FactorVSA.jl) so `(pet dog)`'s code is
-derived from — and unbind-decodable back into — `pet` and `dog`. Wiring `encode` into the
-compound path (deterministic per-(level,pos) roles → encode the parsed atom tree over leaf
-embeddings) is the decodable upgrade; leaf-symbol embeddings are already final.
+"Deterministic (role table, expr-node marker) for the current embedding dim; rebuilt if dim changes."
+function _embed_roles()
+    D = FVSA_EMBED_DIM[]
+    if _EMBED_ROLES[] === nothing || _EMBED_ROLES_DIM[] != D
+        _EMBED_ROLES[] = make_roles(D, _EMBED_L_MAX, _EMBED_BRANCH_MAX;
+            rng = Random.MersenneTwister(0xFAC70_01))
+        _EMBED_MARKER[] = random_hv(BipolarMAP, D, Random.MersenneTwister(0xFAC70_E0))
+        _EMBED_ROLES_DIM[] = D
+    end
+    _EMBED_ROLES[]::Roles, _EMBED_MARKER[]::HV{BipolarMAP}
+end
+
+# minimal s-expression parser: string → (String leaf | Vector{Any} compound)
+function _sexpr_tokens(s::AbstractString)
+    toks = String[]; buf = IOBuffer()
+    flush_buf() = (str = String(take!(buf)); isempty(str) || push!(toks, str))
+    for c in s
+        if c == '(' || c == ')'
+            flush_buf(); push!(toks, string(c))
+        elseif isspace(c)
+            flush_buf()
+        else
+            print(buf, c)
+        end
+    end
+    flush_buf(); toks
+end
+function _parse_node(toks::Vector{String}, pos::Base.RefValue{Int})
+    tok = toks[pos[]]
+    if tok == "("
+        pos[] += 1; node = Any[]
+        while pos[] <= length(toks) && toks[pos[]] != ")"
+            push!(node, _parse_node(toks, pos))
+        end
+        pos[] += 1                      # consume ")"
+        return node
+    else
+        pos[] += 1
+        return tok                      # leaf
+    end
+end
+function _parse_sexpr(s::AbstractString)
+    toks = _sexpr_tokens(s)
+    isempty(toks) && return ""          # empty input → empty leaf
+    _parse_node(toks, Ref(1))
+end
+
+_struct_depth(::AbstractString) = 0
+_struct_depth(x::Vector) = isempty(x) ? 1 : 1 + maximum(_struct_depth, x)
+_struct_maxbranch(::AbstractString) = 0
+_struct_maxbranch(x::Vector) = max(length(x), isempty(x) ? 0 : maximum(_struct_maxbranch, x))
+
+# parsed node → VSATree (leaves resolve to their content-addressed embeddings — so a nested `dog`
+# shares the SAME vector as a standalone `(fvsa-embed dog)`; internal nodes use the expr marker).
+_to_vsatree(x::AbstractString) = VSATree(lookup_vector(FVSA_ARENA, _embed_id(x))::HV{BipolarMAP})
+function _to_vsatree(x::Vector)
+    _, marker = _embed_roles()
+    VSATree(marker, VSATree[_to_vsatree(e) for e in x], nothing)
+end
+
+# the HV for a parsed node: leaf → random seed; compound → compositional encode (bounded)
+_node_hv(::AbstractString, D::Int) = random_hv(BipolarMAP, D)
+function _node_hv(node::Vector, D::Int)
+    if _struct_depth(node) > _EMBED_L_MAX || _struct_maxbranch(node) > _EMBED_BRANCH_MAX
+        @warn "fvsa-embed: atom exceeds encode bounds — opaque seed (not decodable)" maxlog=3
+        return random_hv(BipolarMAP, D)
+    end
+    roles, _ = _embed_roles()
+    encode(_to_vsatree(node), roles)
+end
+
 """
-function _fvsa_embed!(sexpr::AbstractString, D::Int=FVSA_EMBED_DIM[])::Int
+Content-addressed atom embedding (the dual-index seam). Returns the SAME `(VecRef h)` for the same
+atom on every call — keyed by MORK content-id — so one identity addresses both the symbolic atom
+(MORK trie) and its vector (FactorVSA arena). Idempotent; the lock makes get-or-create atomic
+(reentrant, so nested leaf embedding composes; lock order embed→arena, never reversed).
+
+ENCODING (HDC paper §4.1, Eq 11): a LEAF symbol gets a fresh random ±1 seed. A COMPOUND atom is
+COMPOSITIONALLY encoded from its parts' embeddings (`encode(VSATree, Roles)`), so it is
+VSA-decodable — `descend`/unbind recover the parts — and two compounds sharing structure get
+similar codes. Bounded by the role table (depth ≤ $_EMBED_L_MAX, branch ≤ $_EMBED_BRANCH_MAX);
+beyond it, falls back to an opaque seed (logged). Nested leaves are content-addressed and shared.
+"""
+_fvsa_embed!(sexpr::AbstractString, D::Int=FVSA_EMBED_DIM[])::Int = _embed_id(sexpr, D)
+
+function _embed_id(sexpr::AbstractString, D::Int=FVSA_EMBED_DIM[])::Int
     cid = content_id(sexpr)
     @lock _FVSA_EMBED_LOCK begin
         existing = get(FVSA_EMBED, cid, nothing)
         existing !== nothing && return existing
-        id = _fvsa_store!(random_hv(BipolarMAP, D))
+        id = _fvsa_store!(_node_hv(_parse_sexpr(sexpr), D))
         FVSA_EMBED[cid] = id
-        id
+        return id
     end
 end
 

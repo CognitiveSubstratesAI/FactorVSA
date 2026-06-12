@@ -285,6 +285,44 @@ rng() = MersenneTwister(0xF00D)
         @test !is_grounded("fvsa-embed")
     end
 
+    @testset "Dual index — compositional compound encoding (decodable, Eq 11)" begin
+        # A COMPOUND atom's vector is BUILT from its parts (encode(VSATree,Roles)), so it is
+        # VSA-decodable and structure-sensitive — not an opaque seed. Seeded: leaf seeds use the
+        # default RNG (roles use a fixed internal seed), so this pins the similarity margins.
+        Random.seed!(20260612)
+        register_factorvsa!()
+        reg = GROUNDED_REGISTRY
+        empty!(FactorVSA.FVSA_EMBED)
+        sim(a, b) = parse(Float64, reg["fvsa-sim"]([a, b]))
+        hv(v) = lookup_vector(FVSA_ARENA, parse_vecref(v))
+        cossim(a, b) = sum(a.data .* b.data) / length(a.data)
+
+        # parser handles nesting
+        @test FactorVSA._parse_sexpr("(pet dog)") == Any["pet", "dog"]
+        @test FactorVSA._parse_sexpr("(a (b c) d)") == Any["a", Any["b", "c"], "d"]
+
+        pd = reg["fvsa-embed"](["(pet dog)"])
+        pc = reg["fvsa-embed"](["(pet cat)"])
+        cw = reg["fvsa-embed"](["(car wheel)"])
+        # idempotent + structure-sensitive: sharing a part ⇒ more similar than sharing none
+        @test pd == reg["fvsa-embed"](["(pet dog)"])
+        @test sim(pd, pc) > sim(pd, cw) + 0.10
+
+        # nested leaves are content-addressed AND shared with the standalone embedding
+        dog = reg["fvsa-embed"](["dog"])
+        @test FactorVSA._embed_id("dog") == parse_vecref(dog)
+
+        # DECODABLE: unbind dog's position role (index 2) from (pet dog) ⇒ recover dog ≫ a wrong leaf.
+        # encode child = proj(τ[2]⊗leaf); parent binds r[1][i]⊗permute(child,1) — invert in reverse.
+        roles, _ = FactorVSA._embed_roles()
+        rec = unbind(roles.tau[2], invpermute(unbind(roles.r[1][2], hv(pd)), 1))
+        fish = reg["fvsa-embed"](["fish"])
+        @test cossim(proj(rec), hv(dog)) > 0.15                              # recovers the true part
+        @test cossim(proj(rec), hv(dog)) > 3 * abs(cossim(proj(rec), hv(fish)))  # ≫ a wrong part
+
+        unregister_factorvsa!()
+    end
+
     @testset "Concurrency — DualIndex thread safety" begin
         # The arena is lock-guarded; an UNGUARDED version throws BoundsError under a
         # 2-thread insert stress (proven before the fix). This testset is only
