@@ -23,7 +23,7 @@ using MORK: register_grounded!, is_grounded, GROUNDED_REGISTRY, sexpr_to_expr
 
 export FVSA_ARENA, FVSA_CODEBOOKS, register_factorvsa!, unregister_factorvsa!
 export vecref, parse_vecref, cbref, parse_cbref
-export FVSA_EMBED, FVSA_EMBED_DIM, content_id   # dual index: MORK content-id ↔ vector
+export FVSA_EMBED, FVSA_EMBED_DIM, content_id, content_hv   # dual index: MORK content-id ↔ vector
 
 # Process-global arena (Step-0 DualIndex). Id == the VecRef integer.
 # Concurrency: FVSA_ARENA is internally lock-guarded (see DualIndex). The id counter is a
@@ -183,6 +183,17 @@ end
 # everywhere, with no shared state. Distinct ids → independent seeds → near-orthogonal vectors.
 _seeded_leaf_hv(cid::Vector{UInt8}, D::Int) =
     random_hv(BipolarMAP, D, Random.MersenneTwister(_stable_seed(cid)))
+
+"""
+    content_hv(name, D) -> HV{BipolarMAP}
+
+Deterministic, CONTENT-seeded hypervector for a name/symbol/string: the same name maps to the same
+vector in every process (FNV-1a64 of the name's bytes → MersenneTwister seed), distinct names to
+near-orthogonal vectors. Use for role / filler / schema atoms so R-HMH episodes are reproducible and
+shareable across processes (WP §0 reproducible twins, §5.11.3 shared IDs). Contrast `random_hv`, whose
+output depends on global-RNG draw order, not content — the source of the RoleBook non-reproducibility.
+"""
+content_hv(name, D::Int) = _seeded_leaf_hv(Vector{UInt8}(string(name)), D)
 
 # compound → compositional encode (bounded); deterministic given the (deterministic) leaf seeds +
 # the fixed-seed role table & marker, so the whole encoding is content-derived and reproducible.
